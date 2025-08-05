@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Token Creator</title>
+    <style>
+        body { font-family: Arial; max-width: 400px; margin: 50px auto; padding: 20px; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; font-size: 16px; box-sizing: border-box; }
+        button { background: #007bff; color: white; border: none; cursor: pointer; border-radius: 4px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>Create Token</h1>
+    
+    <button id="connect">Connect Phantom</button>
+    <div id="wallet"></div>
+    
+    <div id="form" style="display:none;">
+        <input id="name" placeholder="Token Name">
+        <input id="symbol" placeholder="Symbol">
+        <input id="supply" type="number" placeholder="Supply" value="1000">
+        <button id="create">Create Token</button>
+    </div>
+    
+    <div id="status"></div>
+    <div id="result"></div>
+
+    <script src="https://unpkg.com/@solana/web3.js@1.87.6/lib/index.iife.min.js"></script>
+    <script type="module">
+        try {
+            const splToken = await import('https://esm.sh/@solana/spl-token@0.3.8');
+            window.splToken = splToken;
+            
+            // Import Metaplex for metadata
+            const mpl = await import('https://esm.sh/@metaplex-foundation/mpl-token-metadata@2.13.0');
+            window.mpl = mpl;
+        } catch (error) {
+            console.error('Failed to load libraries:', error);
+        }
+    </script>
+    <script>
+        setTimeout(() => {
+            const connection = new solanaWeb3.Connection('https://api.devnet.solana.com', 'confirmed');
+            let wallet = null;
+
+            document.getElementById('connect').onclick = async () => {
+                try {
+                    if (!window.solana) {
+                        alert('Phantom wallet not found! Please install Phantom browser extension.');
+                        return;
+                    }
+                    
+                    const response = await window.solana.connect();
+                    wallet = window.solana;
+                    
+                    console.log('Wallet connected:', response.publicKey.toString());
+                    document.getElementById('wallet').innerHTML = `Connected: ${response.publicKey.toString().slice(0, 8)}...`;
+                    document.getElementById('form').style.display = 'block';
+                    document.getElementById('connect').style.display = 'none';
+                    
+                } catch (error) {
+                    console.error('Connection failed:', error);
+                    alert('Failed to connect: ' + error.message);
+                }
+            };
+
+            document.getElementById('create').onclick = async () => {
+                const name = document.getElementById('name').value;
+                const symbol = document.getElementById('symbol').value;
+                const supply = parseInt(document.getElementById('supply').value);
+                
+                if (!name || !symbol || !supply) return showStatus('Fill all fields', 'error');
+
+                showStatus('Creating token...', '');
+                document.getElementById('create').disabled = true;
+
+                try {
+                    console.log('Creating token...');
+                    
+                    // Create a keypair for funding the mint creation
+                    const tempKeypair = solanaWeb3.Keypair.generate();
+                    
+                    // Add a memo to make each transaction unique
+                    const memoInstruction = new solanaWeb3.TransactionInstruction({
+                        keys: [],
+                        programId: new solanaWeb3.PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
+                        data: Buffer.from(`Token creation ${Date.now()} ${Math.random()}`, 'utf8')
+                    });
+                    
+                    // Fund the temp keypair from the wallet with minimum required amount
+                    const fundTx = new solanaWeb3.Transaction().add(
+                        memoInstruction,
+                        solanaWeb3.SystemProgram.transfer({
+                            fromPubkey: wallet.publicKey,
+                            toPubkey: tempKeypair.publicKey,
+                            lamports: 0.01 * solanaWeb3.LAMPORTS_PER_SOL // 0.01 SOL for rent and fees
+                        })
+                    );
+                    
+                    fundTx.feePayer = wallet.publicKey;
+                    const { blockhash } = await connection.getLatestBlockhash('confirmed');
+                    fundTx.recentBlockhash = blockhash;
+
+                    // Sign 1
+                    const signedFundTx = await wallet.signTransaction(fundTx);
+                    const fundSig = await connection.sendRawTransaction(signedFundTx.serialize(), {
+                        skipPreflight: false,
+                        preflightCommitment: 'confirmed'
+                    });
+                    
+                    // Wait for funding transaction to confirm
+                    await connection.confirmTransaction(fundSig, 'confirmed');
+                    
+                    // Wait a moment for the account to be available
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    // Now use the funded keypair to create the mint
+                    const mint = await window.splToken.createMint(
+                        connection,
+                        tempKeypair, 
+                        wallet.publicKey, // mint authority
+                        null, // freeze authority
+                        9 // decimals
+                    );
+                    
+                    console.log('Token mint created:', mint.toBase58());
+                    
+                    // Prepare metadata instruction
+                    console.log('Preparing metadata...');
+                    const TOKEN_METADATA_PROGRAM_ID = new solanaWeb3.PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
+                    
+                    // Find metadata PDA
+                    const [metadataPDA] = solanaWeb3.PublicKey.findProgramAddressSync(
+                        [
+                            Buffer.from('metadata'),
+                            TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+                            mint.toBuffer()
+                        ],
+                        TOKEN_METADATA_PROGRAM_ID
+                    );
+                    
+                    // Create metadata instruction
+                    const createMetadataInstruction = window.mpl.createCreateMetadataAccountV3Instruction(
+                        {
+                            metadata: metadataPDA,
+                            mint: mint,
+                            mintAuthority: wallet.publicKey,
+                            payer: wallet.publicKey,
+                            updateAuthority: wallet.publicKey,
+                        },
+                        {
+                            createMetadataAccountArgsV3: {
+                                data: {
+                                    name: name,
+                                    symbol: symbol,
+                                    uri: '',
+                                    sellerFeeBasisPoints: 0,
+                                    creators: null,
+                                    collection: null,
+                                    uses: null,
+                                },
+                                isMutable: true,
+                                collectionDetails: null,
+                            },
+                        }
+                    );
+                    
+                    try {
+                        // Wait a moment for mint to propagate (takes a moment for all nodes to sync)
+                        console.log('Setting up token accounts...');
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        
+                        // Get the associated token address directly         
+                        const associatedTokenAddress = await window.splToken.getAssociatedTokenAddress(
+                            mint,
+                            wallet.publicKey
+                        );
+                        
+                        // Create the associated token account instruction
+                        const createATAInstruction = window.splToken.createAssociatedTokenAccountInstruction(
+                            tempKeypair.publicKey, // payer
+                            associatedTokenAddress, // ata
+                            wallet.publicKey, // owner
+                            mint // mint
+                        );
+                        
+                        // Create and send transaction to create ATA
+                        const createATATx = new solanaWeb3.Transaction().add(createATAInstruction);
+                        createATATx.feePayer = tempKeypair.publicKey;
+                        const { blockhash: ataBlockhash } = await connection.getLatestBlockhash('confirmed');
+                        createATATx.recentBlockhash = ataBlockhash;
+                        
+                        createATATx.sign(tempKeypair);
+                        const ataSignature = await connection.sendRawTransaction(createATATx.serialize(), {
+                            skipPreflight: false,
+                            preflightCommitment: 'confirmed'
+                        });
+                        
+                        await connection.confirmTransaction(ataSignature, 'confirmed');
+                        
+                        // Create mint instruction
+                        const mintInstruction = window.splToken.createMintToInstruction(
+                            mint, // mint
+                            associatedTokenAddress, // destination
+                            wallet.publicKey, // authority
+                            supply * Math.pow(10, 9) // amount
+                        );
+                        
+                        // Combine metadata and mint instructions into ONE transaction
+                        console.log('Creating token with metadata and minting supply...');
+                        const combinedTx = new solanaWeb3.Transaction()
+                            .add(createMetadataInstruction)
+                            .add(mintInstruction);
+                        
+                        combinedTx.feePayer = wallet.publicKey;
+                        const { blockhash: finalBlockhash } = await connection.getLatestBlockhash('confirmed');
+                        combinedTx.recentBlockhash = finalBlockhash;
+                        
+                        const signedTx = await wallet.signTransaction(combinedTx);
+                        const signature = await connection.sendRawTransaction(signedTx.serialize(), {
+                            skipPreflight: false,
+                            preflightCommitment: 'confirmed'
+                        });
+                        
+                        await connection.confirmTransaction(signature, 'confirmed');
+                        console.log('Token created with metadata and supply minted');
+                        
+                        document.getElementById('result').innerHTML = `
+                            <div class="status success">
+                                <h3>Token created successfully!</h3>
+                                <p><strong>Name:</strong> ${name}</p>
+                                <p><strong>Symbol:</strong> ${symbol}</p>
+                                <p><strong>Supply:</strong> ${supply.toLocaleString()}</p>
+                                <p><strong>Mint:</strong> ${mint.toBase58()}</p>
+                                <p><strong>Token Account:</strong> ${associatedTokenAddress.toBase58()}</p>
+                                <a href="https://explorer.solana.com/address/${mint.toBase58()}?cluster=devnet" target="_blank">
+                                    View Token on Explorer
+                                </a>
+                            </div>
+                        `;
+                        
+                    } catch (tokenError) {
+                        console.error('Token account/minting error:', tokenError);
+                    }
+                    
+                    showStatus('', '');
+
+                } catch (error) {
+                    console.error('Error:', error);
+                    showStatus('Error: ' + error.message, 'error');
+                }
+                
+                document.getElementById('create').disabled = false;
+            };
+
+            function showStatus(msg, type) {
+                document.getElementById('status').innerHTML = msg ? `<div class="status ${type}">${msg}</div>` : '';
+            }
+        }, 3000); 
+    </script>
+</body>
+</html>
