@@ -42,7 +42,7 @@
     </script>
     <script>
         setTimeout(() => {
-            const connection = new solanaWeb3.Connection('https://api.devnet.solana.com', 'confirmed');
+            const connection = new solanaWeb3.Connection('https://api.mainnet-beta.solana.com', 'confirmed');
             let wallet = null;
 
             document.getElementById('connect').onclick = async () => {
@@ -235,7 +235,7 @@
                                 <p><strong>Supply:</strong> ${supply.toLocaleString()}</p>
                                 <p><strong>Mint:</strong> ${mint.toBase58()}</p>
                                 <p><strong>Token Account:</strong> ${associatedTokenAddress.toBase58()}</p>
-                                <a href="https://explorer.solana.com/address/${mint.toBase58()}?cluster=devnet" target="_blank">
+                                <a href="https://explorer.solana.com/address/${mint.toBase58()}" target="_blank">
                                     View Token on Explorer
                                 </a>
                             </div>
